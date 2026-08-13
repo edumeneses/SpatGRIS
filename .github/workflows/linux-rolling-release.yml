@@ -4,10 +4,14 @@ name: Linux build & rolling release
 # SpatGRIS-SAT-Linux-x86-64.zip:
 #
 #   SpatGRIS-SAT-Linux-x86-64/
-#   ├── Resources/          (verbatim copy of the repo's Resources tree)
-#   ├── SpatGRIS            (JUCE app, built here)
-#   ├── SpeakerView.pck     (Godot export of edumeneses/SpeakerView)
-#   └── SpeakerView.x86_64
+#   ├── Resources/            (verbatim copy of the repo's Resources tree)
+#   ├── SpatGRIS              (JUCE app, built here)
+#   ├── SpeakerView.pck       (Godot export of edumeneses/SpeakerView)
+#   ├── SpeakerView.x86_64
+#   ├── run-SpatGRIS.sh       ┐
+#   ├── install-SpatGRIS.sh   │ from packaging/ — additions to the reference
+#   ├── spatgris.desktop      │ layout, for running in place or installing
+#   └── spatgris.png          ┘
 #
 # SpatGRIS locates SpeakerView with getSiblingFile("SpeakerView.x86_64") on the
 # current executable (Source/sg_MainComponent.cpp), and Resources through
@@ -295,17 +299,22 @@ jobs:
           cp dl/speakerview/SpeakerView.pck    "$B/SpeakerView.pck"
           chmod +x "$B/SpatGRIS" "$B/SpeakerView.x86_64"
 
-          # Resources are resolved against the *current working directory*, not
-          # the executable's directory (Source/Misc/sg_DefaultFiles.hpp), so a
-          # double-click or a call by absolute path finds no Resources folder.
-          # This wrapper is the only addition to the reference layout.
-          cat > "$B/run-SpatGRIS.sh" <<'EOF'
-          #!/bin/sh
-          # SpatGRIS resolves Resources/ relative to the working directory.
-          cd "$(dirname "$(readlink -f "$0")")" || exit 1
-          exec ./SpatGRIS "$@"
-          EOF
-          chmod +x "$B/run-SpatGRIS.sh"
+          # Additions to the reference layout, all from packaging/:
+          #  run-SpatGRIS.sh    run in place (Resources/ is CWD-relative, see
+          #                     Source/Misc/sg_DefaultFiles.hpp)
+          #  install-SpatGRIS.sh  system-wide or --user install
+          #  spatgris.desktop   menu entry, Exec rewritten by the installer
+          #  spatgris.png       512x512 app logo, also used as the pixmaps fallback
+          cp packaging/run-SpatGRIS.sh     "$B/run-SpatGRIS.sh"
+          cp packaging/install-SpatGRIS.sh "$B/install-SpatGRIS.sh"
+          cp packaging/spatgris.desktop    "$B/spatgris.desktop"
+          cp Resources/AppIcon.iconset/icon_512x512.png "$B/spatgris.png"
+          chmod +x "$B/run-SpatGRIS.sh" "$B/install-SpatGRIS.sh"
+
+          sh -n "$B/install-SpatGRIS.sh"
+          if command -v desktop-file-validate >/dev/null 2>&1; then
+            desktop-file-validate "$B/spatgris.desktop"
+          fi
 
           ls -la "$B"
 
@@ -348,15 +357,25 @@ jobs:
             with `pw-link` / `qpwgraph` / `carla`. The JACK client is named
             `SpatGRIS` instead of JUCE's default `JUCEJack`.
 
-            ### Usage
+            ### Run in place
             ```
             unzip SpatGRIS-SAT-Linux-x86-64.zip
             cd SpatGRIS-SAT-Linux-x86-64
             ./run-SpatGRIS.sh
             ```
-            `Resources/` is resolved against the working directory, so start the
-            app from inside the extracted folder (`run-SpatGRIS.sh` does this for
-            you). SpeakerView is launched by SpatGRIS from the same folder.
+
+            ### Or install it
+            ```
+            ./install-SpatGRIS.sh            # system-wide, re-runs itself under sudo
+            ./install-SpatGRIS.sh --user     # into ~/.local, no root
+            ./install-SpatGRIS.sh --uninstall
+            ```
+            Installs the payload to `/opt/spatgris`, a `spatgris` launcher into
+            `/usr/local/bin`, a desktop entry, and the icon in six hicolor sizes.
+
+            `Resources/` is resolved against the working directory, which is why
+            both the wrapper and the installed launcher `cd` first. SpeakerView is
+            launched by SpatGRIS from the same folder.
 
             ### Requirements
             - Linux x86-64, CPU with AVX2 (`-march=x86-64-v3`)
@@ -378,5 +397,6 @@ jobs:
             ```
             unzip SpatGRIS-SAT-Linux-x86-64.zip
             cd SpatGRIS-SAT-Linux-x86-64
-            ./run-SpatGRIS.sh
+            ./run-SpatGRIS.sh          # run in place
+            ./install-SpatGRIS.sh      # or install system-wide
             ```
