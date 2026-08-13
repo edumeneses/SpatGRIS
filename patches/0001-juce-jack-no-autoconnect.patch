@@ -1,0 +1,29 @@
+diff --git a/modules/juce_audio_devices/native/juce_JackAudio.cpp b/modules/juce_audio_devices/native/juce_JackAudio.cpp
+index 34f5a6a..68a9e11 100644
+--- a/modules/juce_audio_devices/native/juce_JackAudio.cpp
++++ b/modules/juce_audio_devices/native/juce_JackAudio.cpp
+@@ -129,7 +129,7 @@ namespace
+  #ifdef JucePlugin_Name
+   #define JUCE_JACK_CLIENT_NAME JucePlugin_Name
+  #else
+-  #define JUCE_JACK_CLIENT_NAME "JUCEJack"
++  #define JUCE_JACK_CLIENT_NAME "SpatGRIS"
+  #endif
+ #endif
+ 
+@@ -307,6 +307,7 @@ public:
+         juce::jack_activate (client);
+         deviceIsOpen = true;
+ 
++       #ifndef JUCE_JACK_NO_AUTOCONNECT
+         if (! inputChannels.isZero())
+         {
+             forEachClientChannel (inputName, false, [&] (const char* portName, int index)
+@@ -348,6 +349,7 @@ public:
+                     JUCE_JACK_LOG ("Cannot connect output port " + String (index) + " (" + portName + "), error " + String (error));
+             });
+         }
++       #endif
+ 
+         updateActivePorts();
+ 
