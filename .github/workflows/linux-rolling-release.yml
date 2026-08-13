@@ -37,6 +37,7 @@ env:
   # machine's CPU. x86-64-v3 is the AVX2 baseline (Haswell / Excavator, 2013+),
   # which also matches what SAF_ENABLE_SIMD=1 generates.
   MARCH: x86-64-v3
+  GODOT_VERSION: 4.7-stable
   SPEAKERVIEW_REPO: edumeneses/SpeakerView
   SPEAKERVIEW_REF: main
 
@@ -44,21 +45,40 @@ jobs:
   # ── SpeakerView ───────────────────────────────────────────────────────────
   speakerview:
     name: SpeakerView (Godot export)
-    runs-on: ubuntu-latest
-    # Same image and Godot version as the SpeakerView repo's own workflow.
-    container: dunkelgrau/godot:4.7
+    runs-on: ubuntu-24.04
     steps:
-      - name: Link export templates into HOME
-        run: ln -s /root/.local /github/home/.local
-
       - name: Check out SpeakerView
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SPEAKERVIEW_REPO }}
           ref: ${{ env.SPEAKERVIEW_REF }}
 
+      # The SpeakerView repo's own workflow runs in the dunkelgrau/godot:4.7
+      # container, but that image no longer pulls — GRIS-UdeM/SpeakerView has
+      # been failing on `docker pull` since 2026-07-14. Fetch the official
+      # build instead, which also pins the version explicitly.
+      - name: Install Godot ${{ env.GODOT_VERSION }} and export templates
+        run: |
+          set -eux
+          BASE="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}"
+          curl -fsSL -o godot.zip     "${BASE}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL -o templates.tpz "${BASE}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          unzip -q godot.zip
+          sudo install -m 755 "Godot_v${GODOT_VERSION}_linux.x86_64" /usr/local/bin/godot
+          # Godot looks for templates under <version-with-dots>, e.g. 4.7.stable
+          TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION//-/.}"
+          mkdir -p "$TPL_DIR"
+          unzip -q templates.tpz -d tpl
+          mv tpl/templates/* "$TPL_DIR/"
+          rm -rf godot.zip templates.tpz tpl "Godot_v${GODOT_VERSION}_linux.x86_64"
+          godot --version
+          ls "$TPL_DIR" | head
+
+      # First pass populates .godot/; it exits non-zero on a fresh import in
+      # some 4.x builds even when the import succeeded, so tolerate that and
+      # let the export step be the real gate.
       - name: Import Godot project
-        run: godot --headless --import
+        run: godot --headless --import || godot --headless --import
 
       - name: Export Linux build
         run: |
@@ -104,7 +124,8 @@ jobs:
             libxcomposite-dev libxcursor-dev libxinerama-dev libxrandr-dev mesa-common-dev \
             libjack-jackd2-dev libfontconfig1-dev libx11-dev libxext-dev libxrender-dev \
             libwebkit2gtk-4.1-dev libglu1-mesa-dev libnuma-dev \
-            libopenblas-dev liblapacke-dev libfftw3-dev
+            libopenblas-dev liblapacke-dev libfftw3-dev \
+            clang
 
       # SpatGRIS.jucer hardcodes headerPath=/usr/include/openblas (the
       # Fedora/Arch layout) and links -lcblas -llapacke. Debian/Ubuntu put the
@@ -207,8 +228,12 @@ jobs:
         run: |
           "$JUCE_DIR/extras/Projucer/Builds/LinuxMakefile/build/Projucer" --resave SpatGRIS.jucer
 
+      # SpatGRIS.jucer sets recommendedWarnings="LLVM", so Projucer emits
+      # Clang-only warning flags (-Wbool-conversion, -Wshift-sign-overflow,
+      # -Winconsistent-missing-destructor-override, ...) that GCC rejects
+      # outright. Build the app with Clang, as upstream's 20.04 job does.
       - name: Build SpatGRIS
-        run: make -C Builds/LinuxMakefile CONFIG=Release -j"$(nproc)"
+        run: make -C Builds/LinuxMakefile CONFIG=Release CC=clang CXX=clang++ -j"$(nproc)"
 
       - name: Verify binary
         run: |
