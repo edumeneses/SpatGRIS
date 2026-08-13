@@ -70,6 +70,25 @@ jobs:
           [ -e "$LIBDIR/libcblas.so" ]   || sudo ln -sf "$LIBDIR/libopenblas.so" "$LIBDIR/libcblas.so"
           [ -e "$LIBDIR/liblapacke.so" ] || sudo ln -sf "$LIBDIR/libopenblas.so" "$LIBDIR/liblapacke.so"
 
+      # SAF's SIMD path is x86-only: with SAF_ENABLE_SIMD set, saf_externals.h
+      # hard-errors with "SAF_ENABLE_SIMD requires at least SSE, SSE2 and SSE3
+      # support". SpatGRIS.jucer nevertheless puts SAF_ENABLE_SIMD=1 in the Linux
+      # exporter's extraDefs unconditionally, so on aarch64 it has to come out of
+      # both the SAF build and the .jucer, or the app hits the same #error.
+      - name: Match SAF SIMD to the target architecture
+        run: |
+          set -eux
+          if [ "$(uname -m)" = "x86_64" ]; then
+            echo "SAF_SIMD=1" >> "$GITHUB_ENV"
+          else
+            echo "SAF_SIMD=0" >> "$GITHUB_ENV"
+            sed -i 's/&#10;SAF_ENABLE_SIMD=1//' SpatGRIS.jucer
+            # Clang on AArch64 rejects -march=native ("unsupported argument");
+            # -mcpu=native is the equivalent and is accepted by both compilers.
+            sed -i 's/-march=native/-mcpu=native/g' SpatGRIS.jucer
+            grep -c "SAF_ENABLE_SIMD" SpatGRIS.jucer || true
+          fi
+
       # README step 2. SpatGRIS.jucer links saf and saf_example_binauraliser_nf,
       # so SAF has to be built before the app will link. Release tree only; the
       # -march=native left in place here is correct, because this is a
@@ -86,7 +105,7 @@ jobs:
             -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE \
             -DOPENBLAS_HEADER_PATH=/usr/include/openblas \
             -DSAF_USE_FFTW=1 \
-            -DSAF_ENABLE_SIMD=1 \
+            -DSAF_ENABLE_SIMD="$SAF_SIMD" \
             -DSAF_ENABLE_SOFA_READER_MODULE=1
           cmake --build "$SAF_DIR/build/build-release" --parallel "$(nproc)"
 
