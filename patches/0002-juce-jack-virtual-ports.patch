@@ -1,0 +1,155 @@
+diff --git a/modules/juce_audio_devices/native/juce_JackAudio.cpp b/modules/juce_audio_devices/native/juce_JackAudio.cpp
+--- a/modules/juce_audio_devices/native/juce_JackAudio.cpp
++++ b/modules/juce_audio_devices/native/juce_JackAudio.cpp
+@@ -133,6 +133,53 @@
+  #endif
+ #endif
+ 
++//==============================================================================
++/* A synthetic JACK device that exposes an arbitrary number of ports.
++
++   Stock JUCE derives a device's channel count from the port count of whichever
++   *other* JACK client is selected (JackAudioIODeviceType::scanForDevices plus
++   JackAudioIODevice::getChannelNames), so there is no way to ask for "N ports,
++   connected to nothing". Set JUCE_JACK_VIRTUAL_INPUTS and/or
++   JUCE_JACK_VIRTUAL_OUTPUTS and an extra device appears in the device lists;
++   choosing it registers exactly that many ports, connects none of them, and
++   reports them all as active, so the host sees a stable channel count while the
++   graph is patched by hand (pw-link, qpwgraph, ...).
++
++   Linux/BSD only. Everywhere else the counts are always zero, the device never
++   appears, and behaviour is byte-for-byte upstream JUCE.
++*/
++namespace JackVirtualDevice
++{
++    static const char* const deviceName = "Virtual ports (patch manually)";
++
++   #if JUCE_LINUX || JUCE_BSD
++    static int countFromEnv (const char* varName)
++    {
++        const auto value = SystemStats::getEnvironmentVariable (varName, {}).trim();
++
++        if (value.isNotEmpty())
++        {
++            const auto n = value.getIntValue();
++
++            // Capped far below jack.max-client-ports (768 by default in
++            // pipewire-jack) so a typo cannot exhaust the server port table.
++            if (n > 0)
++                return jmin (n, 512);
++        }
++
++        return 0;
++    }
++
++    static int numInputs()   { return countFromEnv ("JUCE_JACK_VIRTUAL_INPUTS"); }
++    static int numOutputs()  { return countFromEnv ("JUCE_JACK_VIRTUAL_OUTPUTS"); }
++   #else
++    static int numInputs()   { return 0; }
++    static int numOutputs()  { return 0; }
++   #endif
++
++    static bool isVirtual (const String& name)  { return name == deviceName; }
++}
++
+ struct JackPortIterator
+ {
+     JackPortIterator (jack_client_t* const client, const bool forInput)
+@@ -181,6 +228,8 @@
+         : AudioIODevice (outName.isEmpty() ? inName : outName, "JACK"),
+           inputName (inName),
+           outputName (outName),
++          virtualInputCount  (JackVirtualDevice::isVirtual (inName)  ? JackVirtualDevice::numInputs()  : 0),
++          virtualOutputCount (JackVirtualDevice::isVirtual (outName) ? JackVirtualDevice::numOutputs() : 0),
+           notifyChannelsChanged (std::move (notifyIn))
+     {
+         jassert (outName.isNotEmpty() || inName.isNotEmpty());
+@@ -244,8 +293,31 @@
+         return names;
+     }
+ 
+-    StringArray getOutputChannelNames() override         { return getChannelNames (outputName, true); }
+-    StringArray getInputChannelNames() override          { return getChannelNames (inputName, false); }
++    static StringArray makeVirtualChannelNames (const String& prefix, int num)
++    {
++        StringArray names;
++
++        for (int i = 1; i <= num; ++i)
++            names.add (prefix + String (i));
++
++        return names;
++    }
++
++    StringArray getOutputChannelNames() override
++    {
++        if (virtualOutputCount > 0)
++            return makeVirtualChannelNames ("out_", virtualOutputCount);
++
++        return getChannelNames (outputName, true);
++    }
++
++    StringArray getInputChannelNames() override
++    {
++        if (virtualInputCount > 0)
++            return makeVirtualChannelNames ("in_", virtualInputCount);
++
++        return getChannelNames (inputName, false);
++    }
+ 
+     Array<double> getAvailableSampleRates() override
+     {
+@@ -308,7 +380,7 @@
+         deviceIsOpen = true;
+ 
+        #ifndef JUCE_JACK_NO_AUTOCONNECT
+-        if (! inputChannels.isZero())
++        if (virtualInputCount == 0 && ! inputChannels.isZero())
+         {
+             forEachClientChannel (inputName, false, [&] (const char* portName, int index)
+             {
+@@ -329,7 +401,7 @@
+             });
+         }
+ 
+-        if (! outputChannels.isZero())
++        if (virtualOutputCount == 0 && ! outputChannels.isZero())
+         {
+             forEachClientChannel (outputName, true, [&] (const char* portName, int index)
+             {
+@@ -429,6 +501,7 @@
+     }
+ 
+     String inputName, outputName;
++    const int virtualInputCount, virtualOutputCount;
+ 
+ private:
+     //==============================================================================
+@@ -513,11 +586,11 @@
+         BigInteger newOutputChannels, newInputChannels;
+ 
+         for (int i = 0; i < outputPorts.size(); ++i)
+-            if (juce::jack_port_connected (outputPorts.getUnchecked (i)))
++            if (virtualOutputCount > 0 || juce::jack_port_connected (outputPorts.getUnchecked (i)))
+                 newOutputChannels.setBit (i);
+ 
+         for (int i = 0; i < inputPorts.size(); ++i)
+-            if (juce::jack_port_connected (inputPorts.getUnchecked (i)))
++            if (virtualInputCount > 0 || juce::jack_port_connected (inputPorts.getUnchecked (i)))
+                 newInputChannels.setBit (i);
+ 
+         if (newOutputChannels != activeOutputChannels
+@@ -644,6 +717,14 @@
+         {
+             JUCE_JACK_LOG_STATUS (status);
+         }
++
++        // Offered whenever virtual ports were requested, regardless of which
++        // other clients happen to be in the graph.
++        if (JackVirtualDevice::numInputs() > 0)
++            inputNames.add (JackVirtualDevice::deviceName);
++
++        if (JackVirtualDevice::numOutputs() > 0)
++            outputNames.add (JackVirtualDevice::deviceName);
+     }
+ 
+     StringArray getDeviceNames (bool wantInputNames) const

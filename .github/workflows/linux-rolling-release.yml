@@ -8,10 +8,11 @@ name: Linux build & rolling release
 #   ├── SpatGRIS              (JUCE app, built here)
 #   ├── SpeakerView.pck       (Godot export of edumeneses/SpeakerView)
 #   ├── SpeakerView.x86_64
-#   ├── run-SpatGRIS.sh       ┐
-#   ├── install-SpatGRIS.sh   │ from packaging/ — additions to the reference
-#   ├── spatgris.desktop      │ layout, for running in place or installing
-#   └── spatgris.png          ┘
+#   ├── run-SpatGRIS.sh        ┐
+#   ├── install-SpatGRIS.sh    │ from packaging/ — additions to the reference
+#   ├── spatgris-launcher.sh   │ layout, for running in place or installing.
+#   ├── spatgris.desktop       │ A .deb is published alongside the zip.
+#   └── spatgris.png           ┘
 #
 # SpatGRIS locates SpeakerView with getSiblingFile("SpeakerView.x86_64") on the
 # current executable (Source/sg_MainComponent.cpp), and Resources through
@@ -152,13 +153,16 @@ jobs:
       # open). The patch puts that behind JUCE_JACK_NO_AUTOCONNECT and renames
       # the standalone JACK client from "JUCEJack" to "SpatGRIS". Applied here
       # rather than committed, because JUCE is a third-level submodule.
-      - name: Apply JUCE JACK patch (no auto-connect)
+      - name: Apply JUCE JACK patches (no auto-connect + virtual ports)
         run: |
           set -eux
           cd "$JUCE_DIR"
-          git apply --check "$GITHUB_WORKSPACE/patches/0001-juce-jack-no-autoconnect.patch"
-          git apply -v "$GITHUB_WORKSPACE/patches/0001-juce-jack-no-autoconnect.patch"
-          grep -n "JUCE_JACK_NO_AUTOCONNECT" modules/juce_audio_devices/native/juce_JackAudio.cpp
+          # Order matters: 0002 is generated against the post-0001 file.
+          for patch in 0001-juce-jack-no-autoconnect 0002-juce-jack-virtual-ports; do
+            git apply --check "$GITHUB_WORKSPACE/patches/$patch.patch"
+            git apply -v     "$GITHUB_WORKSPACE/patches/$patch.patch"
+          done
+          grep -n -E "JUCE_JACK_NO_AUTOCONNECT|JackVirtualDevice" modules/juce_audio_devices/native/juce_JackAudio.cpp | head
 
       - name: Prepare SpatGRIS.jucer for redistribution
         run: |
@@ -305,13 +309,19 @@ jobs:
           #  install-SpatGRIS.sh  system-wide or --user install
           #  spatgris.desktop   menu entry, Exec rewritten by the installer
           #  spatgris.png       512x512 app logo, also used as the pixmaps fallback
-          cp packaging/run-SpatGRIS.sh     "$B/run-SpatGRIS.sh"
-          cp packaging/install-SpatGRIS.sh "$B/install-SpatGRIS.sh"
-          cp packaging/spatgris.desktop    "$B/spatgris.desktop"
+          cp packaging/install-SpatGRIS.sh  "$B/install-SpatGRIS.sh"
+          cp packaging/spatgris-launcher.sh "$B/spatgris-launcher.sh"
+          cp packaging/spatgris.desktop     "$B/spatgris.desktop"
           cp Resources/AppIcon.iconset/icon_512x512.png "$B/spatgris.png"
-          chmod +x "$B/run-SpatGRIS.sh" "$B/install-SpatGRIS.sh"
+
+          # run-in-place launcher: same template, payload resolved from $0 so the
+          # bundle can be extracted anywhere.
+          sed 's|@PAYLOAD@|$(dirname "$(readlink -f "$0")")|' \
+            packaging/spatgris-launcher.sh > "$B/run-SpatGRIS.sh"
+          chmod +x "$B/run-SpatGRIS.sh" "$B/install-SpatGRIS.sh" "$B/spatgris-launcher.sh"
 
           sh -n "$B/install-SpatGRIS.sh"
+          sh -n "$B/run-SpatGRIS.sh"
           if command -v desktop-file-validate >/dev/null 2>&1; then
             desktop-file-validate "$B/spatgris.desktop"
           fi
@@ -324,6 +334,144 @@ jobs:
           zip -qry "${BUNDLE_NAME}.zip" "${BUNDLE_NAME}"
           unzip -l "${BUNDLE_NAME}.zip" | head -10
           du -h "${BUNDLE_NAME}.zip"
+
+      # ── .deb ───────────────────────────────────────────────────────────────
+      # Same payload as the zip, laid out under FHS paths, with Depends derived
+      # from the binaries so `apt install ./file.deb` pulls the runtime libraries
+      # instead of failing later with a bare loader error.
+      - name: Build .deb
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends dpkg-dev
+
+          # Debian-valid and monotonic. A tag gives the obvious version; an
+          # untagged build gets 0~git<commit-date>.<sha>, which sorts BELOW any
+          # future real version and still upgrades cleanly between builds.
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            DEB_VER="${GITHUB_REF#refs/tags/v}"
+          else
+            DEB_VER="0~git$(git show -s --format=%cd --date=format:%Y%m%d%H%M).$(git rev-parse --short=7 HEAD)"
+          fi
+          echo "DEB_VER=$DEB_VER" >> "$GITHUB_ENV"
+
+          B="${BUNDLE_NAME}"
+          R=debroot
+          rm -rf "$R"
+          mkdir -p "$R/DEBIAN" "$R/usr/lib/spatgris" "$R/usr/bin" \
+                   "$R/usr/share/applications" "$R/usr/share/pixmaps" "$R/etc/default"
+
+          cp -a "$B/SpatGRIS" "$B/SpeakerView.x86_64" "$B/SpeakerView.pck" "$R/usr/lib/spatgris/"
+          cp -a "$B/Resources" "$R/usr/lib/spatgris/Resources"
+          chmod 0755 "$R/usr/lib/spatgris/SpatGRIS" "$R/usr/lib/spatgris/SpeakerView.x86_64"
+
+          sed 's|@PAYLOAD@|/usr/lib/spatgris|' packaging/spatgris-launcher.sh > "$R/usr/bin/spatgris"
+          chmod 0755 "$R/usr/bin/spatgris"
+          sed 's|^Exec=.*|Exec=/usr/bin/spatgris|' packaging/spatgris.desktop \
+            > "$R/usr/share/applications/spatgris.desktop"
+
+          for sz in 16 32 64 128 256 512; do
+            src="$B/Resources/AppIcon.iconset/icon_${sz}x${sz}.png"
+            if [ ! -f "$src" ]; then
+              half=$((sz / 2)); src="$B/Resources/AppIcon.iconset/icon_${half}x${half}@2x.png"
+            fi
+            if [ -f "$src" ]; then
+              install -Dm644 "$src" "$R/usr/share/icons/hicolor/${sz}x${sz}/apps/spatgris.png"
+            fi
+          done
+          install -m644 "$B/spatgris.png" "$R/usr/share/pixmaps/spatgris.png"
+
+          # Operator-owned config, registered as a conffile so dpkg preserves
+          # local edits across upgrades.
+          cat > "$R/etc/default/spatgris" <<'CFG'
+          # SpatGRIS configuration.
+          #
+          # Port count for the JACK device "Virtual ports (patch manually)". With
+          # either set, that device appears in SpatGRIS's audio settings; choosing
+          # it registers exactly this many ports, auto-connects nothing, and
+          # reports them all active so you can patch the graph yourself.
+          # Leave both unset for upstream behaviour, where the channel count comes
+          # from whichever other JACK client you select.
+          #
+          #JUCE_JACK_VIRTUAL_INPUTS=64
+          #JUCE_JACK_VIRTUAL_OUTPUTS=64
+
+          # Set to 1 to never wrap in pw-jack, even when libjack.so.0 is missing.
+          #SPATGRIS_NO_PW_JACK=1
+          CFG
+          echo /etc/default/spatgris > "$R/DEBIAN/conffiles"
+
+          # Link-time deps straight from the ELF headers. dpkg-shlibdeps wants a
+          # debian/ directory to exist; a stub is enough for -O.
+          mkdir -p debian
+          printf 'Source: spatgris\n\nPackage: spatgris\nArchitecture: amd64\nDepends:\n' > debian/control
+          # dpkg-shlibdeps searches only the standard library paths, so it fails
+          # on anything behind Debian's alternatives layout — openblas, lapacke
+          # and fftw all live in a flavour subdirectory reached via symlink:
+          #   error: cannot find library libopenblas.so.0 ... RPATH: ''
+          # Resolve each one through ldconfig and hand shlibdeps the real dir.
+          SEARCH=""
+          for so in libopenblas.so.0 liblapacke.so.3 libfftw3f.so.3; do
+            sopath="$(ldconfig -p | awk -v s="$so" '$1 == s { print $NF; exit }')"
+            if [ -n "$sopath" ]; then
+              SEARCH="$SEARCH -l$(dirname "$(readlink -f "$sopath")")"
+            fi
+          done
+          echo "shlibdeps search path: ${SEARCH:-<none>}"
+
+          SHLIBS="$(dpkg-shlibdeps -O --ignore-missing-info $SEARCH \
+                      "$R/usr/lib/spatgris/SpatGRIS" \
+                      "$R/usr/lib/spatgris/SpeakerView.x86_64" \
+                    | sed -n 's/^shlibs:Depends=//p' || true)"
+          rm -rf debian
+          echo "derived: ${SHLIBS:-<none>}"
+          if [ -z "$SHLIBS" ]; then
+            echo "::warning::dpkg-shlibdeps produced nothing; using the explicit fallback list"
+            SHLIBS="libc6, libstdc++6, libgcc-s1, libatomic1, libasound2t64 | libasound2, libcurl4t64 | libcurl4, libfftw3-single3, libfontconfig1, libfreetype6, libgl1, liblapacke, libopenblas0"
+          fi
+
+          # dlopen'd at runtime, so invisible to shlibdeps. libjack is the one
+          # that matters: without it the JACK backend never appears.
+          MANUAL="pipewire-jack | libjack-jackd2-0 | libjack-0.125, libxcursor1, libxinerama1"
+
+          INSTALLED_KB="$(du -sk "$R" | cut -f1)"
+          cat > "$R/DEBIAN/control" <<CTRL
+          Package: spatgris
+          Version: ${DEB_VER}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Edu Meneses <emeneses@sat.qc.ca>
+          Installed-Size: ${INSTALLED_KB}
+          Depends: ${SHLIBS}, ${MANUAL}
+          Homepage: https://github.com/edumeneses/SpatGRIS
+          Description: Sound spatialization tool (SAT dome build)
+           SpatGRIS built for the Societe des Arts Technologiques dome, with JACK
+           auto-connect disabled and an optional virtual JACK device exposing an
+           arbitrary number of ports for manual patching under PipeWire.
+           .
+           Requires a CPU with AVX2 (built with -march=x86-64-v3). Bundles
+           SpeakerView and the SpatGRIS resource tree under /usr/lib/spatgris.
+          CTRL
+          dpkg-deb --build --root-owner-group "$R" "spatgris_${DEB_VER}_amd64.deb"
+          echo "=== control ==="
+          dpkg-deb --info "spatgris_${DEB_VER}_amd64.deb"
+          echo "=== contents (top) ==="
+          dpkg-deb --contents "spatgris_${DEB_VER}_amd64.deb" | grep -vE "/Resources/" | head -25
+
+      # Proves apt can actually satisfy Depends, rather than discovering it on
+      # the dome machine at showtime.
+      - name: Verify dependencies resolve
+        run: |
+          set -eux
+          sudo apt-get install -s -y "$PWD/spatgris_${DEB_VER}_amd64.deb" | tail -20
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: spatgris-deb-${{ steps.ver.outputs.version }}
+          path: spatgris_*_amd64.deb
+          if-no-files-found: error
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
@@ -343,7 +491,9 @@ jobs:
           prerelease: true
           make_latest: false
           name: SpatGRIS SAT (rolling build)
-          files: ${{ env.BUNDLE_NAME }}.zip
+          files: |
+            ${{ env.BUNDLE_NAME }}.zip
+            spatgris_*_amd64.deb
           body: |
             ## SpatGRIS SAT — rolling build
 
@@ -351,11 +501,28 @@ jobs:
             (${{ github.sha }}). Overwritten on every push; tagged releases are
             below.
 
-            Built from this fork, which differs from upstream in one respect:
-            **the JACK backend no longer auto-connects.** SpatGRIS registers its
-            ports and leaves them unconnected, so you wire the graph yourself
+            Two differences from upstream, both Linux-only:
+
+            **1. The JACK backend no longer auto-connects.** SpatGRIS registers
+            its ports and leaves them unconnected, so you wire the graph yourself
             with `pw-link` / `qpwgraph` / `carla`. The JACK client is named
             `SpatGRIS` instead of JUCE's default `JUCEJack`.
+
+            **2. A JACK device with an arbitrary port count.** Upstream takes the
+            channel count from whichever *other* JACK client you select, so you
+            cannot ask for "N ports, wired to nothing". Set the counts in
+            `/etc/default/spatgris` (or `~/.config/spatgris.conf`):
+
+            ```
+            JUCE_JACK_VIRTUAL_INPUTS=64
+            JUCE_JACK_VIRTUAL_OUTPUTS=64
+            ```
+
+            A device named **Virtual ports (patch manually)** then appears in
+            SpatGRIS's audio settings. Selecting it registers exactly that many
+            ports, connects none of them, and reports them all as active — so the
+            channel count stays stable while you patch. Leave both unset for
+            upstream behaviour.
 
             ### Run in place
             ```
@@ -364,12 +531,23 @@ jobs:
             ./run-SpatGRIS.sh
             ```
 
-            ### Or install it
+            ### Or install the .deb (recommended — resolves dependencies)
+            ```
+            sudo apt install ./spatgris_*_amd64.deb
+            spatgris
+            ```
+            Payload in `/usr/lib/spatgris`, launcher `/usr/bin/spatgris`, config
+            `/etc/default/spatgris` (a conffile, so your edits survive upgrades).
+
+            ### Or the portable installer (any distro, no apt)
             ```
             ./install-SpatGRIS.sh            # system-wide, re-runs itself under sudo
             ./install-SpatGRIS.sh --user     # into ~/.local, no root
             ./install-SpatGRIS.sh --uninstall
             ```
+            This one does *not* install dependencies. If a library is missing the
+            launcher now says which, and gives the apt command:
+            `sudo apt install libopenblas0 liblapacke libfftw3-single3`
             Installs the payload to `/opt/spatgris`, a `spatgris` launcher into
             `/usr/local/bin`, a desktop entry, and the icon in six hicolor sizes.
 
@@ -381,12 +559,19 @@ jobs:
             - Linux x86-64, CPU with AVX2 (`-march=x86-64-v3`)
             - PipeWire with `pipewire-jack`, or JACK
 
+            The launcher wraps itself in `pw-jack` automatically when
+            `libjack.so.0` is not on the loader path, which is how Debian and
+            Ubuntu ship `pipewire-jack`. Without that, `dlopen("libjack.so.0")`
+            fails and the JACK backend never appears in the device list.
+
       # ── Tagged release ─────────────────────────────────────────────────────
       - name: Publish tagged release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.BUNDLE_NAME }}.zip
+          files: |
+            ${{ env.BUNDLE_NAME }}.zip
+            spatgris_*_amd64.deb
           name: SpatGRIS SAT ${{ steps.ver.outputs.version }}
           body: |
             ## SpatGRIS SAT ${{ steps.ver.outputs.version }}
@@ -395,6 +580,8 @@ jobs:
             JACK client is named `SpatGRIS`.
 
             ```
+            sudo apt install ./spatgris_*_amd64.deb    # resolves dependencies
+            # or, from the zip:
             unzip SpatGRIS-SAT-Linux-x86-64.zip
             cd SpatGRIS-SAT-Linux-x86-64
             ./run-SpatGRIS.sh          # run in place

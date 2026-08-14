@@ -108,6 +108,8 @@ if [ "$MODE" = uninstall ]; then
         fi
     fi
     rm -f "$LAUNCHER" "$DESKTOP" "$PIXMAP"
+    # /etc/default/spatgris and ~/.config/spatgris.conf are left in place on
+    # purpose: they hold the operator's port counts, not our shipped data.
     for s in $ICON_SIZES; do
         rm -f "$DATADIR/icons/hicolor/${s}x${s}/apps/$APP.png"
     done
@@ -121,6 +123,7 @@ for f in SpatGRIS SpeakerView.x86_64 SpeakerView.pck; do
     [ -f "$SRC/$f" ] || { echo "Error: $f missing next to this script." >&2; exit 1; }
 done
 [ -d "$SRC/Resources" ] || { echo "Error: Resources/ missing next to this script." >&2; exit 1; }
+[ -f "$SRC/spatgris-launcher.sh" ] || { echo "Error: spatgris-launcher.sh missing next to this script." >&2; exit 1; }
 
 # Refuse to clobber a directory that is not a previous SpatGRIS install.
 if [ -e "$PREFIX" ] && [ ! -x "$PREFIX/SpatGRIS" ]; then
@@ -145,13 +148,40 @@ chmod 0755 "$PREFIX/SpatGRIS" "$PREFIX/SpeakerView.x86_64"
 
 # ── Launcher ──────────────────────────────────────────────────────────────────
 mkdir -p "$BINDIR"
-cat > "$LAUNCHER" <<EOF
-#!/bin/sh
-# SpatGRIS resolves Resources/ relative to the working directory, so cd first.
-cd "$PREFIX" || exit 1
-exec ./SpatGRIS "\$@"
-EOF
+# One canonical launcher, shared with the .deb: cds into the payload, loads the
+# JUCE_JACK_VIRTUAL_* config, and wraps in pw-jack when libjack.so.0 is not on
+# the loader path.
+sed "s|@PAYLOAD@|$PREFIX|" "$SRC/spatgris-launcher.sh" > "$LAUNCHER"
 chmod 0755 "$LAUNCHER"
+
+# Config holding the JACK port counts. Read by the launcher, so it also applies
+# when SpatGRIS is started from the desktop menu with no shell profile loaded.
+if [ "$USER_MODE" -eq 1 ]; then
+    CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/spatgris.conf"
+else
+    CONFIG=/etc/default/spatgris
+fi
+if [ ! -e "$CONFIG" ]; then
+    mkdir -p "$(dirname "$CONFIG")"
+    cat > "$CONFIG" <<'EOF'
+# SpatGRIS configuration.
+#
+# Number of ports for the JACK device named "Virtual ports (patch manually)".
+# With either set, that device appears in SpatGRIS's audio settings; choosing it
+# registers exactly this many ports, auto-connects nothing, and reports them all
+# as active so you can patch the graph yourself (pw-link, qpwgraph, ...).
+# Leave both unset to keep upstream behaviour, where the channel count comes from
+# whichever other JACK client you select.
+#
+#JUCE_JACK_VIRTUAL_INPUTS=64
+#JUCE_JACK_VIRTUAL_OUTPUTS=64
+
+# Set to 1 to never wrap in pw-jack, even when libjack.so.0 is missing.
+#SPATGRIS_NO_PW_JACK=1
+EOF
+    chmod 0644 "$CONFIG"
+    echo "  config   -> $CONFIG (edit to set JACK port counts)"
+fi
 
 # ── Desktop entry ─────────────────────────────────────────────────────────────
 mkdir -p "$DATADIR/applications"
