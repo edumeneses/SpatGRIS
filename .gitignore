@@ -246,3 +246,23 @@ xcuserdata/
 ####
 # UNKNOWN: recommended by others, but I can't discover what these files are
 #
+
+#####
+# Claude Code / local agent tooling.
+# Kept untracked so it never leaks into a branch destined for upstream.
+.claude/
+.claude.json
+.claude.json.backup
+CLAUDE.local.md
+*.backupclaude
+*.backupclaude[0-9]
+
+#####
+# Local packaging output. The bundle and .deb are produced in CI by
+# .github/workflows/linux-rolling-release.yml; these appear only if you
+# reproduce those steps by hand.
+debroot/
+/debian/
+*.deb
+SpatGRIS-SAT-Linux-x86-64/
+SpatGRIS-SAT-Linux-x86-64.zip
