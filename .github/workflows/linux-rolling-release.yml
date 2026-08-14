@@ -343,15 +343,24 @@ jobs:
         run: |
           set -eux
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends dpkg-dev
+          # dpkg-dev for dpkg-shlibdeps, plus the runtime libraries SpatGRIS
+          # links against. This job builds nothing, so those libraries are
+          # otherwise absent and shlibdeps has nothing to resolve — which is why
+          # earlier builds silently used the fallback list. Installing them here
+          # also proves the package names in that list are real.
+          sudo apt-get install -y --no-install-recommends \
+            dpkg-dev libopenblas0 liblapacke libfftw3-single3
 
           # Debian-valid and monotonic. A tag gives the obvious version; an
-          # untagged build gets 0~git<commit-date>.<sha>, which sorts BELOW any
-          # future real version and still upgrades cleanly between builds.
+          # untagged build gets 0.git<commit-date>.<sha>: the leading 0 keeps it
+          # below any future real version, and the date makes successive builds
+          # upgrade cleanly. Deliberately NOT the more idiomatic 0~git — GitHub
+          # rewrites "~" when it stores a release asset, which would leave the
+          # published filename disagreeing with the version inside the package.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             DEB_VER="${GITHUB_REF#refs/tags/v}"
           else
-            DEB_VER="0~git$(git show -s --format=%cd --date=format:%Y%m%d%H%M).$(git rev-parse --short=7 HEAD)"
+            DEB_VER="0.git$(git show -s --format=%cd --date=format:%Y%m%d%H%M).$(git rev-parse --short=7 HEAD)"
           fi
           echo "DEB_VER=$DEB_VER" >> "$GITHUB_ENV"
 
