@@ -167,12 +167,14 @@ profile is read. Leave both unset for upstream behaviour.
 
 ## State as of 2026-08-14
 
-- `main` = `3e88b76` — virtual ports + `.deb`, both workflows green.
+- `main` = `3d67c6e` — virtual ports, `.deb`, and these notes. Both workflows green.
 - `continuous` release carries the zip and the `.deb`.
-- Branches kept on purpose, not stale:
-  - `ci/linux-jack-no-autoconnect` (`5d1c47a`) — for the upstream proposal.
-  - `feat/jack-virtual-ports` (`f61db35`) — ditto.
-  - `fix/deb-derive-depends` (`9f6b531`) — two CI fixes, awaiting merge.
+- Branches kept on purpose, all merged, none stale. They exist so the work can be
+  re-proposed upstream commit by commit:
+  - `ci/linux-jack-no-autoconnect` (`5d1c47a`) — no-autoconnect + client rename.
+  - `feat/jack-virtual-ports` (`f61db35`) — the virtual JACK device and the `.deb`.
+  - `fix/deb-derive-depends` (`9f6b531`) — derived `Depends`, tilde-free version.
+  - `docs/handover` (`4846c71`) — this file and the `.gitignore` additions.
 
 **Verified:** builds green x86_64 + arm64; bundle layout matches the reference
 zip; `Virtual ports (patch manually)` and both env var names present in the
