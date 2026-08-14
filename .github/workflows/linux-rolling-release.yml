@@ -352,12 +352,15 @@ jobs:
             dpkg-dev libopenblas0 liblapacke libfftw3-single3
 
           # Debian-valid and monotonic. A tag gives the obvious version; an
-          # untagged build gets 0~git<commit-date>.<sha>, which sorts BELOW any
-          # future real version and still upgrades cleanly between builds.
+          # untagged build gets 0.git<commit-date>.<sha>: the leading 0 keeps it
+          # below any future real version, and the date makes successive builds
+          # upgrade cleanly. Deliberately NOT the more idiomatic 0~git — GitHub
+          # rewrites "~" when it stores a release asset, which would leave the
+          # published filename disagreeing with the version inside the package.
           if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             DEB_VER="${GITHUB_REF#refs/tags/v}"
           else
-            DEB_VER="0~git$(git show -s --format=%cd --date=format:%Y%m%d%H%M).$(git rev-parse --short=7 HEAD)"
+            DEB_VER="0.git$(git show -s --format=%cd --date=format:%Y%m%d%H%M).$(git rev-parse --short=7 HEAD)"
           fi
           echo "DEB_VER=$DEB_VER" >> "$GITHUB_ENV"
 
