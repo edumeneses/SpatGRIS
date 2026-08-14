@@ -395,12 +395,18 @@ jobs:
           cat > "$R/etc/default/spatgris" <<'CFG'
           # SpatGRIS configuration.
           #
-          # Port count for the JACK device "Virtual ports (patch manually)". With
-          # either set, that device appears in SpatGRIS's audio settings; choosing
-          # it registers exactly this many ports, auto-connects nothing, and
-          # reports them all active so you can patch the graph yourself.
-          # Leave both unset for upstream behaviour, where the channel count comes
-          # from whichever other JACK client you select.
+          # Initial port count for the JACK device "Virtual ports (patch
+          # manually)". With either set, that device appears in SpatGRIS's audio
+          # settings; choosing it registers exactly this many ports, auto-connects
+          # nothing, and reports them all active so you can patch the graph
+          # yourself.
+          #
+          # These are only the values used before anyone touches the app: Settings
+          # has "JACK input ports" / "JACK output ports" fields once the JACK
+          # device type is selected, and a count entered there is remembered and
+          # takes precedence from then on. Set these for a machine being
+          # provisioned; leave both unset for upstream behaviour, where the
+          # channel count comes from whichever other JACK client you select.
           #
           #JUCE_JACK_VIRTUAL_INPUTS=64
           #JUCE_JACK_VIRTUAL_OUTPUTS=64
@@ -533,19 +539,26 @@ jobs:
 
             **2. A JACK device with an arbitrary port count.** Upstream takes the
             channel count from whichever *other* JACK client you select, so you
-            cannot ask for "N ports, wired to nothing". Set the counts in
-            `/etc/default/spatgris` (or `~/.config/spatgris.conf`):
+            cannot ask for "N ports, wired to nothing".
+
+            Pick **JACK** as the audio device type and Settings grows two fields,
+            **JACK input ports** and **JACK output ports** (0–256). Typing a count
+            registers exactly that many ports under the device **Virtual ports
+            (patch manually)**, connects none of them, and reports them all as
+            active — so the channel count stays stable while you patch. The
+            setting applies immediately, no relaunch, and is remembered across
+            restarts and version bumps.
+
+            The counts can also be seeded before first launch, for a machine being
+            provisioned, in `/etc/default/spatgris` (or `~/.config/spatgris.conf`):
 
             ```
             JUCE_JACK_VIRTUAL_INPUTS=64
             JUCE_JACK_VIRTUAL_OUTPUTS=64
             ```
 
-            A device named **Virtual ports (patch manually)** then appears in
-            SpatGRIS's audio settings. Selecting it registers exactly that many
-            ports, connects none of them, and reports them all as active — so the
-            channel count stays stable while you patch. Leave both unset for
-            upstream behaviour.
+            Whatever is typed in Settings wins from then on. Leave the fields at 0
+            and both variables unset for upstream behaviour.
 
             ### Run in place
             ```

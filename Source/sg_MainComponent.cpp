@@ -27,6 +27,7 @@
 #include "sg_ControlPanel.hpp"
 #include "sg_FatalError.hpp"
 #include "sg_GrisLookAndFeel.hpp"
+#include "sg_JackVirtualPorts.hpp"
 #include "sg_MainWindow.hpp"
 #include "sg_ParallelSpatAlgorithm.hpp"
 #include "sg_ScopeGuard.hpp"
@@ -249,6 +250,10 @@ MainContentComponent::MainContentComponent(MainWindow & mainWindow,
 
     //==============================================================================
     auto const initAudioManager = [&]() {
+        // Has to happen before the first device scan: JUCE reads the port counts
+        // from the environment while enumerating JACK devices.
+        jackVirtualPorts::applyStoredCounts();
+
         auto const & audioSettings{ mData.appData.audioSettings };
         AudioManager::init(audioSettings.deviceType,
                            audioSettings.inputDevice,

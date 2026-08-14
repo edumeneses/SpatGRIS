@@ -76,6 +76,13 @@ class SettingsComponent final
     juce::Label mBufferSize{ "", "Buffer Size (spls) :" };
     juce::ComboBox mBufferSizeCombo;
 
+    // Shown only for the JACK device type on Linux/BSD. See sg_JackVirtualPorts.hpp.
+    juce::Label mJackInputPortsLabel{ "", "JACK input ports :" };
+    juce::TextEditor mJackInputPortsTextEditor{};
+
+    juce::Label mJackOutputPortsLabel{ "", "JACK output ports :" };
+    juce::TextEditor mJackOutputPortsTextEditor{};
+
     //==============================================================================
     juce::Label mSpatNetworkSettings{ "", "Spatialization Data Network Settings" };
 
@@ -121,6 +128,7 @@ public:
     void buttonClicked(juce::Button * button) override;
 
     void textEditorFocusLost(juce::TextEditor & text_editor) override;
+    void textEditorReturnKeyPressed(juce::TextEditor & text_editor) override;
 
     void placeComponents();
 
@@ -128,6 +136,9 @@ private:
     //==============================================================================
     void fillComboBoxes();
     bool isSelectedAudioDeviceActive();
+    [[nodiscard]] bool shouldShowJackVirtualPortControls() const;
+    void updateJackVirtualPortControls();
+    void applyJackVirtualPortCounts();
     //==============================================================================
     JUCE_LEAK_DETECTOR(SettingsComponent)
 public:

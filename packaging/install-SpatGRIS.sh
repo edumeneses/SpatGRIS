@@ -166,12 +166,17 @@ if [ ! -e "$CONFIG" ]; then
     cat > "$CONFIG" <<'EOF'
 # SpatGRIS configuration.
 #
-# Number of ports for the JACK device named "Virtual ports (patch manually)".
+# Initial number of ports for the JACK device "Virtual ports (patch manually)".
 # With either set, that device appears in SpatGRIS's audio settings; choosing it
 # registers exactly this many ports, auto-connects nothing, and reports them all
 # as active so you can patch the graph yourself (pw-link, qpwgraph, ...).
-# Leave both unset to keep upstream behaviour, where the channel count comes from
-# whichever other JACK client you select.
+#
+# These are only the values used before anyone touches the app: Settings has
+# "JACK input ports" / "JACK output ports" fields once the JACK device type is
+# selected, and a count entered there is remembered and takes precedence from
+# then on. Set these for a machine being provisioned; leave both unset to keep
+# upstream behaviour, where the channel count comes from whichever other JACK
+# client you select.
 #
 #JUCE_JACK_VIRTUAL_INPUTS=64
 #JUCE_JACK_VIRTUAL_OUTPUTS=64

@@ -21,6 +21,7 @@
 
 #include "sg_AudioManager.hpp"
 #include "sg_GrisLookAndFeel.hpp"
+#include "sg_JackVirtualPorts.hpp"
 #include "sg_MainComponent.hpp"
 #include "sg_SpeakerViewComponent.hpp"
 
@@ -41,6 +42,8 @@ constexpr auto COMPONENT_HEIGHT = 22;
 
 constexpr auto LINE_SKIP = 30;
 constexpr auto SECTION_SKIP = 50;
+
+juce::String const JACK_DEVICE_TYPE_NAME{ "JACK" };
 
 bool isNotPowerOfTwo(int const value)
 {
@@ -152,6 +155,18 @@ SettingsComponent::SettingsComponent(MainContentComponent & parent,
     initLabel(mBufferSize);
     initComboBox(mBufferSizeCombo);
 
+    initLabel(mJackInputPortsLabel);
+    initTextEditor(mJackInputPortsTextEditor,
+                   "Number of JACK input ports to register, connected to nothing",
+                   juce::String{ jackVirtualPorts::getNumInputs() });
+    mJackInputPortsTextEditor.setInputRestrictions(3, "0123456789");
+
+    initLabel(mJackOutputPortsLabel);
+    initTextEditor(mJackOutputPortsTextEditor,
+                   "Number of JACK output ports to register, connected to nothing",
+                   juce::String{ jackVirtualPorts::getNumOutputs() });
+    mJackOutputPortsTextEditor.setInputRestrictions(3, "0123456789");
+
     //==============================================================================
     initSectionLabel(mSpatNetworkSettings);
 
@@ -187,6 +202,7 @@ SettingsComponent::SettingsComponent(MainContentComponent & parent,
     addAndMakeVisible(mSaveSettingsButton);
 
     fillComboBoxes();
+    updateJackVirtualPortControls();
     placeComponents();
 }
 
@@ -290,6 +306,15 @@ void SettingsComponent::placeComponents()
 
     mBufferSize.setTopLeftPosition(LEFT_COL_START, yPosition);
     mBufferSizeCombo.setTopLeftPosition(RIGHT_COL_START, yPosition);
+
+    if (shouldShowJackVirtualPortControls()) {
+        addLineGap();
+        mJackInputPortsLabel.setTopLeftPosition(LEFT_COL_START, yPosition);
+        mJackInputPortsTextEditor.setTopLeftPosition(RIGHT_COL_START, yPosition);
+        addLineGap();
+        mJackOutputPortsLabel.setTopLeftPosition(LEFT_COL_START, yPosition);
+        mJackOutputPortsTextEditor.setTopLeftPosition(RIGHT_COL_START, yPosition);
+    }
     addSectionGap();
 
     //==============================================================================
@@ -401,6 +426,99 @@ bool SettingsComponent::isSelectedAudioDeviceActive()
 }
 
 //==============================================================================
+bool SettingsComponent::shouldShowJackVirtualPortControls() const
+{
+    return jackVirtualPorts::isSupported() && mDeviceTypeCombo.getText() == JACK_DEVICE_TYPE_NAME;
+}
+
+//==============================================================================
+void SettingsComponent::updateJackVirtualPortControls()
+{
+    auto const visible{ shouldShowJackVirtualPortControls() };
+
+    mJackInputPortsLabel.setVisible(visible);
+    mJackInputPortsTextEditor.setVisible(visible);
+    mJackOutputPortsLabel.setVisible(visible);
+    mJackOutputPortsTextEditor.setVisible(visible);
+
+    if (visible) {
+        mJackInputPortsTextEditor.setText(juce::String{ jackVirtualPorts::getNumInputs() }, false);
+        mJackOutputPortsTextEditor.setText(juce::String{ jackVirtualPorts::getNumOutputs() }, false);
+    }
+}
+
+//==============================================================================
+void SettingsComponent::applyJackVirtualPortCounts()
+{
+    static auto constexpr CLAMP_EDITOR = [](juce::TextEditor & editor) {
+        auto const value{ juce::jlimit(0, jackVirtualPorts::MAX_PORTS, editor.getText().getIntValue()) };
+        editor.setText(juce::String{ value }, false);
+        return value;
+    };
+
+    auto const numInputs{ CLAMP_EDITOR(mJackInputPortsTextEditor) };
+    auto const numOutputs{ CLAMP_EDITOR(mJackOutputPortsTextEditor) };
+
+    if (numInputs == jackVirtualPorts::getNumInputs() && numOutputs == jackVirtualPorts::getNumOutputs()) {
+        return;
+    }
+
+    jackVirtualPorts::setCounts(numInputs, numOutputs);
+
+    auto & audioDeviceManager{ AudioManager::getInstance().getAudioDeviceManager() };
+    auto * deviceType{ audioDeviceManager.getCurrentDeviceTypeObject() };
+    if (deviceType == nullptr) {
+        return;
+    }
+
+    juce::ScopedLock const lock{ mMainContentComponent.getAudioProcessor().getLock() };
+
+    auto setup{ audioDeviceManager.getAudioDeviceSetup() };
+    setup.inputChannels = NEEDED_INPUT_CHANNELS;
+    setup.outputChannels = NEEDED_OUTPUT_CHANNELS;
+
+    // A device registers one JACK port per name returned by
+    // get{Input,Output}ChannelNames(), and reads those once, in its constructor.
+    // Rescanning makes the synthetic device appear or disappear; closing is what
+    // forces a *new* device object, since AudioDeviceManager reuses the existing
+    // one whenever the device name is unchanged, which it is here.
+    deviceType->scanForDevices();
+    audioDeviceManager.closeAudioDevice();
+
+    auto const virtualDevice{ jackVirtualPorts::deviceName() };
+    auto const defaultDeviceName = [&](bool const isInput) {
+        auto const names{ deviceType->getDeviceNames(isInput) };
+        return names[deviceType->getDefaultDeviceIndex(isInput)];
+    };
+
+    // Dropping to zero un-advertises the device, so a setup still naming it would
+    // be rejected outright with "No such device".
+    if (numInputs > 0) {
+        setup.inputDeviceName = virtualDevice;
+    } else if (setup.inputDeviceName == virtualDevice) {
+        setup.inputDeviceName = defaultDeviceName(true);
+    }
+
+    if (numOutputs > 0) {
+        setup.outputDeviceName = virtualDevice;
+    } else if (setup.outputDeviceName == virtualDevice) {
+        setup.outputDeviceName = defaultDeviceName(false);
+    }
+
+    audioDeviceManager.setAudioDeviceSetup(setup, true);
+
+    fillComboBoxes();
+    updateJackVirtualPortControls();
+    placeComponents();
+
+    if (isSelectedAudioDeviceActive()) {
+        auto * currentAudioDevice{ audioDeviceManager.getCurrentAudioDevice() };
+        AudioManager::getInstance().reloadPlayerAudioFiles(currentAudioDevice->getCurrentBufferSizeSamples(),
+                                                          currentAudioDevice->getCurrentSampleRate());
+    }
+}
+
+//==============================================================================
 void SettingsComponent::comboBoxChanged(juce::ComboBox * comboBoxThatHasChanged)
 {
     auto & audioDeviceManager{ AudioManager::getInstance().getAudioDeviceManager() };
@@ -439,6 +557,8 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox * comboBoxThatHasChanged)
         jassertfalse;
     }
     fillComboBoxes();
+    updateJackVirtualPortControls();
+    placeComponents();
 
     if (isSelectedAudioDeviceActive()) {
         auto * currentAudioDevice{ AudioManager::getInstance().getAudioDeviceManager().getCurrentAudioDevice() };
@@ -447,8 +567,21 @@ void SettingsComponent::comboBoxChanged(juce::ComboBox * comboBoxThatHasChanged)
     }
 }
 
+//==============================================================================
+void SettingsComponent::textEditorReturnKeyPressed(juce::TextEditor & textEditor)
+{
+    if (&textEditor == &mJackInputPortsTextEditor || &textEditor == &mJackOutputPortsTextEditor) {
+        applyJackVirtualPortCounts();
+    }
+}
+
 void SettingsComponent::textEditorFocusLost(juce::TextEditor & textEditor)
 {
+    if (&textEditor == &mJackInputPortsTextEditor || &textEditor == &mJackOutputPortsTextEditor) {
+        applyJackVirtualPortCounts();
+        return;
+    }
+
     if (&textEditor == &mSpeakerViewOutputAddressTextEditor && textEditor.getText() != "") {
         // Validate IP address (thanks
         // https://forum.juce.com/t/how-to-achive-ip-address-validation-for-taxteditor/12036/6 )
