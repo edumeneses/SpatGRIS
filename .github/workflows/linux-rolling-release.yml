@@ -405,7 +405,21 @@ jobs:
           # debian/ directory to exist; a stub is enough for -O.
           mkdir -p debian
           printf 'Source: spatgris\n\nPackage: spatgris\nArchitecture: amd64\nDepends:\n' > debian/control
-          SHLIBS="$(dpkg-shlibdeps -O --ignore-missing-info \
+          # dpkg-shlibdeps searches only the standard library paths, so it fails
+          # on anything behind Debian's alternatives layout — openblas, lapacke
+          # and fftw all live in a flavour subdirectory reached via symlink:
+          #   error: cannot find library libopenblas.so.0 ... RPATH: ''
+          # Resolve each one through ldconfig and hand shlibdeps the real dir.
+          SEARCH=""
+          for so in libopenblas.so.0 liblapacke.so.3 libfftw3f.so.3; do
+            sopath="$(ldconfig -p | awk -v s="$so" '$1 == s { print $NF; exit }')"
+            if [ -n "$sopath" ]; then
+              SEARCH="$SEARCH -l$(dirname "$(readlink -f "$sopath")")"
+            fi
+          done
+          echo "shlibdeps search path: ${SEARCH:-<none>}"
+
+          SHLIBS="$(dpkg-shlibdeps -O --ignore-missing-info $SEARCH \
                       "$R/usr/lib/spatgris/SpatGRIS" \
                       "$R/usr/lib/spatgris/SpeakerView.x86_64" \
                     | sed -n 's/^shlibs:Depends=//p' || true)"
