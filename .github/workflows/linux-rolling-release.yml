@@ -492,6 +492,15 @@ jobs:
       # ── Rolling release ────────────────────────────────────────────────────
       # Every push to main overwrites the `continuous` prerelease, always under
       # the same asset name so download links stay stable.
+      # The zip has a fixed name and overwrites itself, but the .deb filename
+      # carries the version, so each push would ADD an asset and the release
+      # would accumulate one ~50 MB .deb per commit with no way to tell which is
+      # current. Publish the rolling .deb under a stable name; the version stays
+      # correct inside the package, so apt upgrades still work.
+      - name: Stage rolling .deb under a stable name
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: cp "spatgris_${DEB_VER}_amd64.deb" spatgris_continuous_amd64.deb
+
       - name: Publish rolling release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
@@ -502,7 +511,7 @@ jobs:
           name: SpatGRIS SAT (rolling build)
           files: |
             ${{ env.BUNDLE_NAME }}.zip
-            spatgris_*_amd64.deb
+            spatgris_continuous_amd64.deb
           body: |
             ## SpatGRIS SAT — rolling build
 
@@ -542,7 +551,7 @@ jobs:
 
             ### Or install the .deb (recommended — resolves dependencies)
             ```
-            sudo apt install ./spatgris_*_amd64.deb
+            sudo apt install ./spatgris_continuous_amd64.deb
             spatgris
             ```
             Payload in `/usr/lib/spatgris`, launcher `/usr/bin/spatgris`, config
