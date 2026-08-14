@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SpatGRIS
+GenericName=Sound Spatialization
+Comment=Sound spatialization tool — SAT dome build (JACK auto-connect disabled)
+Comment[fr]=Outil de spatialisation sonore — version dôme SAT (auto-connexion JACK désactivée)
+Exec=spatgris
+Icon=spatgris
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=spatialization;spatialisation;ambisonics;VBAP;MBAP;dome;JACK;PipeWire;
+StartupNotify=true
+StartupWMClass=SpatGRIS

@@ -1,0 +1,402 @@
+name: Linux build & rolling release
+
+# Linux-only build of this fork, packaged exactly like the reference bundle
+# SpatGRIS-SAT-Linux-x86-64.zip:
+#
+#   SpatGRIS-SAT-Linux-x86-64/
+#   ├── Resources/            (verbatim copy of the repo's Resources tree)
+#   ├── SpatGRIS              (JUCE app, built here)
+#   ├── SpeakerView.pck       (Godot export of edumeneses/SpeakerView)
+#   ├── SpeakerView.x86_64
+#   ├── run-SpatGRIS.sh       ┐
+#   ├── install-SpatGRIS.sh   │ from packaging/ — additions to the reference
+#   ├── spatgris.desktop      │ layout, for running in place or installing
+#   └── spatgris.png          ┘
+#
+# SpatGRIS locates SpeakerView with getSiblingFile("SpeakerView.x86_64") on the
+# current executable (Source/sg_MainComponent.cpp), and Resources through
+# getCurrentWorkingDirectory()/Resources (Source/Misc/sg_DefaultFiles.hpp) — so
+# the two must sit next to the binary AND the app must be started from inside
+# the extracted folder. run-SpatGRIS.sh handles the latter.
+#
+# Every push to main refreshes the `continuous` prerelease with a stable asset
+# name. Version tags (v*) publish a normal release.
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: linux-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  BUNDLE_NAME: SpatGRIS-SAT-Linux-x86-64
+  JUCE_DIR: submodules/AlgoGRIS/submodules/StructGRIS/submodules/JUCE
+  SAF_DIR: submodules/AlgoGRIS/submodules/Spatial_Audio_Framework
+  # SpatGRIS.jucer builds Release with -march=native. That is correct for a
+  # local build and wrong for a redistributable: the runner CPU is not the dome
+  # machine's CPU. x86-64-v3 is the AVX2 baseline (Haswell / Excavator, 2013+),
+  # which also matches what SAF_ENABLE_SIMD=1 generates.
+  MARCH: x86-64-v3
+  GODOT_VERSION: 4.7-stable
+  SPEAKERVIEW_REPO: edumeneses/SpeakerView
+  SPEAKERVIEW_REF: main
+
+jobs:
+  # ── SpeakerView ───────────────────────────────────────────────────────────
+  speakerview:
+    name: SpeakerView (Godot export)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out SpeakerView
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SPEAKERVIEW_REPO }}
+          ref: ${{ env.SPEAKERVIEW_REF }}
+
+      # The SpeakerView repo's own workflow runs in the dunkelgrau/godot:4.7
+      # container, but that image no longer pulls — GRIS-UdeM/SpeakerView has
+      # been failing on `docker pull` since 2026-07-14. Fetch the official
+      # build instead, which also pins the version explicitly.
+      - name: Install Godot ${{ env.GODOT_VERSION }} and export templates
+        run: |
+          set -eux
+          BASE="https://github.com/godotengine/godot-builds/releases/download/${GODOT_VERSION}"
+          curl -fsSL -o godot.zip     "${BASE}/Godot_v${GODOT_VERSION}_linux.x86_64.zip"
+          curl -fsSL -o templates.tpz "${BASE}/Godot_v${GODOT_VERSION}_export_templates.tpz"
+          unzip -q godot.zip
+          sudo install -m 755 "Godot_v${GODOT_VERSION}_linux.x86_64" /usr/local/bin/godot
+          # Godot looks for templates under <version-with-dots>, e.g. 4.7.stable
+          TPL_DIR="$HOME/.local/share/godot/export_templates/${GODOT_VERSION//-/.}"
+          mkdir -p "$TPL_DIR"
+          unzip -q templates.tpz -d tpl
+          mv tpl/templates/* "$TPL_DIR/"
+          rm -rf godot.zip templates.tpz tpl "Godot_v${GODOT_VERSION}_linux.x86_64"
+          godot --version
+          ls "$TPL_DIR" | head
+
+      # First pass populates .godot/; it exits non-zero on a fresh import in
+      # some 4.x builds even when the import succeeded, so tolerate that and
+      # let the export step be the real gate.
+      - name: Import Godot project
+        run: godot --headless --import || godot --headless --import
+
+      - name: Export Linux build
+        run: |
+          mkdir -p out
+          godot --headless --export-release "Linux" out/SpeakerView.x86_64
+          ls -l out
+
+      # export_presets.cfg sets binary_format/embed_pck=false, so the export
+      # produces SpeakerView.x86_64 + SpeakerView.pck. Fail loudly if that ever
+      # changes, rather than shipping a bundle missing the pck.
+      - name: Verify export contents
+        run: |
+          test -f out/SpeakerView.x86_64 || { echo "::error::SpeakerView.x86_64 missing"; exit 1; }
+          test -f out/SpeakerView.pck    || { echo "::error::SpeakerView.pck missing (embed_pck changed?)"; exit 1; }
+
+      - name: Upload SpeakerView
+        uses: actions/upload-artifact@v4
+        with:
+          name: speakerview-linux
+          path: out
+          if-no-files-found: error
+
+  # ── SpatGRIS ──────────────────────────────────────────────────────────────
+  spatgris:
+    name: SpatGRIS (JUCE app)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          # JUCE Linux deps (docs/Linux Dependencies.md) + cmake/ninja for SAF +
+          # openblas/lapacke/fftw, which SpatGRIS.jucer links as cblas, lapacke,
+          # fftw3f.
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            ladspa-sdk freeglut3-dev libasound2-dev libcurl4-openssl-dev libfreetype6-dev \
+            libxcomposite-dev libxcursor-dev libxinerama-dev libxrandr-dev mesa-common-dev \
+            libjack-jackd2-dev libfontconfig1-dev libx11-dev libxext-dev libxrender-dev \
+            libwebkit2gtk-4.1-dev libglu1-mesa-dev libnuma-dev \
+            libopenblas-dev liblapacke-dev libfftw3-dev \
+            clang
+
+      # SpatGRIS.jucer hardcodes headerPath=/usr/include/openblas (the
+      # Fedora/Arch layout) and links -lcblas -llapacke. Debian/Ubuntu put the
+      # headers elsewhere and do not always ship a bare libcblas.so. Bridge with
+      # symlinks so the .jucer needs no edit and stays mergeable with upstream.
+      - name: Normalise BLAS/LAPACK layout
+        run: |
+          set -eux
+          CBLAS_H="$(find /usr/include -name cblas.h -print -quit)"
+          test -n "$CBLAS_H"
+          sudo mkdir -p /usr/include/openblas
+          sudo ln -sf "$(dirname "$CBLAS_H")"/*.h /usr/include/openblas/
+          LIBDIR=/usr/lib/x86_64-linux-gnu
+          [ -e "$LIBDIR/libcblas.so" ]   || sudo ln -sf "$LIBDIR/libopenblas.so" "$LIBDIR/libcblas.so"
+          [ -e "$LIBDIR/liblapacke.so" ] || sudo ln -sf "$LIBDIR/libopenblas.so" "$LIBDIR/liblapacke.so"
+          ls -l /usr/include/openblas/cblas.h "$LIBDIR/libcblas.so" "$LIBDIR/liblapacke.so"
+
+      # JUCE's JACK backend unconditionally connects the client's ports to the
+      # selected peer client on open() (juce_JackAudio.cpp, JackAudioIODevice::
+      # open). The patch puts that behind JUCE_JACK_NO_AUTOCONNECT and renames
+      # the standalone JACK client from "JUCEJack" to "SpatGRIS". Applied here
+      # rather than committed, because JUCE is a third-level submodule.
+      - name: Apply JUCE JACK patch (no auto-connect)
+        run: |
+          set -eux
+          cd "$JUCE_DIR"
+          git apply --check "$GITHUB_WORKSPACE/patches/0001-juce-jack-no-autoconnect.patch"
+          git apply -v "$GITHUB_WORKSPACE/patches/0001-juce-jack-no-autoconnect.patch"
+          grep -n "JUCE_JACK_NO_AUTOCONNECT" modules/juce_audio_devices/native/juce_JackAudio.cpp
+
+      - name: Prepare SpatGRIS.jucer for redistribution
+        run: |
+          python3 - <<'PY'
+          import re, os
+          march = os.environ["MARCH"]
+          p = "SpatGRIS.jucer"
+          s = open(p, encoding="utf-8").read()
+
+          # 1. -march=native -> fixed baseline (both occurrences are inside LINUX_MAKE)
+          n = s.count("-march=native")
+          s = s.replace("-march=native", f"-march={march}")
+
+          # 2. define JUCE_JACK_NO_AUTOCONNECT for the Linux exporter only.
+          #    Done through extraDefs rather than CPPFLAGS so it does not depend
+          #    on how the generated Makefile threads user flags.
+          m = re.search(r'<LINUX_MAKE\b[^>]*>', s)
+          assert m, "LINUX_MAKE exporter not found"
+          tag = m.group(0)
+          if "JUCE_JACK_NO_AUTOCONNECT" not in tag:
+              d = re.search(r'extraDefs="([^"]*)"', tag)
+              if d:
+                  new = tag.replace(d.group(0),
+                                    f'extraDefs="{d.group(1)}&#10;JUCE_JACK_NO_AUTOCONNECT=1"')
+              else:
+                  new = tag[:-1] + ' extraDefs="JUCE_JACK_NO_AUTOCONNECT=1">'
+              s = s[:m.start()] + new + s[m.end():]
+
+          open(p, "w", encoding="utf-8").write(s)
+          print(f"replaced {n} x -march=native with -march={march}")
+          print(re.search(r'<LINUX_MAKE\b[^>]*>', s).group(0))
+          PY
+
+      # README step 2: SAF must exist before the app links. Only the Release
+      # tree is built — SpatGRIS.jucer's Release config points at
+      # <SAF>/build/build-release/{framework,examples}. Flags mirror
+      # build_scripts/Linux_build_Spatial_Audio_Framework_lib.sh; the Debug half
+      # of that script is skipped. SAF_ENABLE_NETCDF stays OFF (its default), so
+      # no netcdf/hdf5 is needed for the SOFA reader.
+      - name: Build Spatial_Audio_Framework (Release)
+        run: |
+          set -eux
+          # Resets the SAF submodule, then applies the project's own leak fixes.
+          bash submodules/AlgoGRIS/build_scripts/_fix_saf_mem_leaks.sh
+
+          # SAF_ENABLE_SIMD force-writes -march=native into CMAKE_C_FLAGS /
+          # CMAKE_CXX_FLAGS (framework/CMakeLists.txt:42-45, CACHE ... FORCE), so
+          # -D overrides on the command line cannot win. Rewrite the two lines so
+          # libsaf.a targets the same baseline as the app: a runner with AVX-512
+          # would otherwise produce a library that SIGILLs on the dome machine.
+          sed -i "s/-march=native/-march=${MARCH}/g" "$SAF_DIR/framework/CMakeLists.txt"
+          grep -n "march=" "$SAF_DIR/framework/CMakeLists.txt"
+
+          cmake -S "$SAF_DIR" -B "$SAF_DIR/build/build-release" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_STANDARD=20 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON \
+            -DCMAKE_CXX_EXTENSIONS=OFF \
+            -DSAF_PERFORMANCE_LIB=SAF_USE_OPEN_BLAS_AND_LAPACKE \
+            -DOPENBLAS_HEADER_PATH=/usr/include/openblas \
+            -DSAF_USE_FFTW=1 \
+            -DSAF_ENABLE_SIMD=1 \
+            -DSAF_ENABLE_SOFA_READER_MODULE=1
+          cmake --build "$SAF_DIR/build/build-release" --parallel "$(nproc)"
+          find "$SAF_DIR/build/build-release" -name 'libsaf*.a' -o -name 'libsaf*.so' | sort
+
+      - name: Build Projucer
+        run: make -C "$JUCE_DIR/extras/Projucer/Builds/LinuxMakefile" CONFIG=Release -j"$(nproc)"
+
+      - name: Generate LinuxMakefile
+        run: |
+          "$JUCE_DIR/extras/Projucer/Builds/LinuxMakefile/build/Projucer" --resave SpatGRIS.jucer
+
+      # SpatGRIS.jucer sets recommendedWarnings="LLVM", so Projucer emits
+      # Clang-only warning flags (-Wbool-conversion, -Wshift-sign-overflow,
+      # -Winconsistent-missing-destructor-override, ...) that GCC rejects
+      # outright. Build the app with Clang, as upstream's 20.04 job does.
+      - name: Build SpatGRIS
+        run: make -C Builds/LinuxMakefile CONFIG=Release CC=clang CXX=clang++ -j"$(nproc)"
+
+      - name: Verify binary
+        run: |
+          set -eux
+          file Builds/LinuxMakefile/build/SpatGRIS
+          ldd  Builds/LinuxMakefile/build/SpatGRIS | sort
+
+      - name: Upload SpatGRIS binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: spatgris-linux
+          path: Builds/LinuxMakefile/build/SpatGRIS
+          if-no-files-found: error
+
+  # ── Bundle + release ──────────────────────────────────────────────────────
+  package:
+    name: Package & release
+    needs: [speakerview, spatgris]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Derive version string
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${VERSION}"
+
+      - name: Download SpatGRIS binary
+        uses: actions/download-artifact@v4
+        with:
+          name: spatgris-linux
+          path: dl/spatgris
+
+      - name: Download SpeakerView
+        uses: actions/download-artifact@v4
+        with:
+          name: speakerview-linux
+          path: dl/speakerview
+
+      - name: Assemble bundle
+        run: |
+          set -eux
+          B="${BUNDLE_NAME}"
+          mkdir -p "$B"
+          cp -a Resources "$B/Resources"
+          cp dl/spatgris/SpatGRIS "$B/SpatGRIS"
+          cp dl/speakerview/SpeakerView.x86_64 "$B/SpeakerView.x86_64"
+          cp dl/speakerview/SpeakerView.pck    "$B/SpeakerView.pck"
+          chmod +x "$B/SpatGRIS" "$B/SpeakerView.x86_64"
+
+          # Additions to the reference layout, all from packaging/:
+          #  run-SpatGRIS.sh    run in place (Resources/ is CWD-relative, see
+          #                     Source/Misc/sg_DefaultFiles.hpp)
+          #  install-SpatGRIS.sh  system-wide or --user install
+          #  spatgris.desktop   menu entry, Exec rewritten by the installer
+          #  spatgris.png       512x512 app logo, also used as the pixmaps fallback
+          cp packaging/run-SpatGRIS.sh     "$B/run-SpatGRIS.sh"
+          cp packaging/install-SpatGRIS.sh "$B/install-SpatGRIS.sh"
+          cp packaging/spatgris.desktop    "$B/spatgris.desktop"
+          cp Resources/AppIcon.iconset/icon_512x512.png "$B/spatgris.png"
+          chmod +x "$B/run-SpatGRIS.sh" "$B/install-SpatGRIS.sh"
+
+          sh -n "$B/install-SpatGRIS.sh"
+          if command -v desktop-file-validate >/dev/null 2>&1; then
+            desktop-file-validate "$B/spatgris.desktop"
+          fi
+
+          ls -la "$B"
+
+      - name: Create zip
+        run: |
+          set -eux
+          zip -qry "${BUNDLE_NAME}.zip" "${BUNDLE_NAME}"
+          unzip -l "${BUNDLE_NAME}.zip" | head -10
+          du -h "${BUNDLE_NAME}.zip"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BUNDLE_NAME }}-${{ steps.ver.outputs.version }}
+          path: ${{ env.BUNDLE_NAME }}.zip
+          if-no-files-found: error
+
+      # ── Rolling release ────────────────────────────────────────────────────
+      # Every push to main overwrites the `continuous` prerelease, always under
+      # the same asset name so download links stay stable.
+      - name: Publish rolling release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          prerelease: true
+          make_latest: false
+          name: SpatGRIS SAT (rolling build)
+          files: ${{ env.BUNDLE_NAME }}.zip
+          body: |
+            ## SpatGRIS SAT — rolling build
+
+            Automatic Linux x86-64 build of the latest commit on `main`
+            (${{ github.sha }}). Overwritten on every push; tagged releases are
+            below.
+
+            Built from this fork, which differs from upstream in one respect:
+            **the JACK backend no longer auto-connects.** SpatGRIS registers its
+            ports and leaves them unconnected, so you wire the graph yourself
+            with `pw-link` / `qpwgraph` / `carla`. The JACK client is named
+            `SpatGRIS` instead of JUCE's default `JUCEJack`.
+
+            ### Run in place
+            ```
+            unzip SpatGRIS-SAT-Linux-x86-64.zip
+            cd SpatGRIS-SAT-Linux-x86-64
+            ./run-SpatGRIS.sh
+            ```
+
+            ### Or install it
+            ```
+            ./install-SpatGRIS.sh            # system-wide, re-runs itself under sudo
+            ./install-SpatGRIS.sh --user     # into ~/.local, no root
+            ./install-SpatGRIS.sh --uninstall
+            ```
+            Installs the payload to `/opt/spatgris`, a `spatgris` launcher into
+            `/usr/local/bin`, a desktop entry, and the icon in six hicolor sizes.
+
+            `Resources/` is resolved against the working directory, which is why
+            both the wrapper and the installed launcher `cd` first. SpeakerView is
+            launched by SpatGRIS from the same folder.
+
+            ### Requirements
+            - Linux x86-64, CPU with AVX2 (`-march=x86-64-v3`)
+            - PipeWire with `pipewire-jack`, or JACK
+
+      # ── Tagged release ─────────────────────────────────────────────────────
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.BUNDLE_NAME }}.zip
+          name: SpatGRIS SAT ${{ steps.ver.outputs.version }}
+          body: |
+            ## SpatGRIS SAT ${{ steps.ver.outputs.version }}
+
+            Linux x86-64 bundle. The JACK backend does not auto-connect; the
+            JACK client is named `SpatGRIS`.
+
+            ```
+            unzip SpatGRIS-SAT-Linux-x86-64.zip
+            cd SpatGRIS-SAT-Linux-x86-64
+            ./run-SpatGRIS.sh          # run in place
+            ./install-SpatGRIS.sh      # or install system-wide
+            ```
