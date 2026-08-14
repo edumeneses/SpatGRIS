@@ -405,8 +405,13 @@ jobs:
           #JUCE_JACK_VIRTUAL_INPUTS=64
           #JUCE_JACK_VIRTUAL_OUTPUTS=64
 
-          # Set to 1 to never wrap in pw-jack, even when libjack.so.0 is missing.
+          # The launcher wraps SpatGRIS in pw-jack when PipeWire is the live JACK
+          # server, so that dlopen("libjack.so.0") reaches PipeWire's client
+          # library rather than jackd2's. Override the choice if the autodetection
+          # is wrong for this machine: NO_PW_JACK to never wrap (a real jackd owns
+          # the card), PW_JACK to always wrap.
           #SPATGRIS_NO_PW_JACK=1
+          #SPATGRIS_PW_JACK=1
           CFG
           echo /etc/default/spatgris > "$R/DEBIAN/conffiles"
 
@@ -577,10 +582,14 @@ jobs:
             - Linux x86-64, CPU with AVX2 (`-march=x86-64-v3`)
             - PipeWire with `pipewire-jack`, or JACK
 
-            The launcher wraps itself in `pw-jack` automatically when
-            `libjack.so.0` is not on the loader path, which is how Debian and
-            Ubuntu ship `pipewire-jack`. Without that, `dlopen("libjack.so.0")`
-            fails and the JACK backend never appears in the device list.
+            The launcher wraps itself in `pw-jack` automatically when PipeWire is
+            the live JACK server. Debian and Ubuntu keep `pipewire-jack`'s
+            `libjack.so.0` off the loader path, so without the wrap
+            `dlopen("libjack.so.0")` either fails outright — no JACK backend in
+            the device list — or, if `jackd2` happens to be installed alongside,
+            loads *its* client library and then cannot reach a server. Override
+            with `SPATGRIS_NO_PW_JACK=1` / `SPATGRIS_PW_JACK=1` in
+            `/etc/default/spatgris` if the autodetection is wrong for your box.
 
       # ── Tagged release ─────────────────────────────────────────────────────
       - name: Publish tagged release

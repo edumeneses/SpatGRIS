@@ -149,8 +149,8 @@ chmod 0755 "$PREFIX/SpatGRIS" "$PREFIX/SpeakerView.x86_64"
 # ── Launcher ──────────────────────────────────────────────────────────────────
 mkdir -p "$BINDIR"
 # One canonical launcher, shared with the .deb: cds into the payload, loads the
-# JUCE_JACK_VIRTUAL_* config, and wraps in pw-jack when libjack.so.0 is not on
-# the loader path.
+# JUCE_JACK_VIRTUAL_* config, and wraps in pw-jack when PipeWire is the live
+# JACK server.
 sed "s|@PAYLOAD@|$PREFIX|" "$SRC/spatgris-launcher.sh" > "$LAUNCHER"
 chmod 0755 "$LAUNCHER"
 
@@ -176,8 +176,12 @@ if [ ! -e "$CONFIG" ]; then
 #JUCE_JACK_VIRTUAL_INPUTS=64
 #JUCE_JACK_VIRTUAL_OUTPUTS=64
 
-# Set to 1 to never wrap in pw-jack, even when libjack.so.0 is missing.
+# The launcher wraps SpatGRIS in pw-jack when PipeWire is the live JACK server,
+# so that dlopen("libjack.so.0") reaches PipeWire's client library rather than
+# jackd2's. Override the choice if the autodetection is wrong for this machine:
+# NO_PW_JACK to never wrap (a real jackd owns the card), PW_JACK to always wrap.
 #SPATGRIS_NO_PW_JACK=1
+#SPATGRIS_PW_JACK=1
 EOF
     chmod 0644 "$CONFIG"
     echo "  config   -> $CONFIG (edit to set JACK port counts)"
